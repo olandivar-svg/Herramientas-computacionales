@@ -1,0 +1,136 @@
+---
+title: "Herramientas Computacionales - Notebook 1"
+output: html_document
+---
+
+### Preparación del entorno
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(scatterplot3d)
+
+hogares <- data.frame(
+estado = c("Hidalgo","Sonora","Morelos","Coahuila",
+"Tlaxcala","Durango","Colima","Zacatecas"),
+ingreso_mensual = c(14500, 18200, 12100, 17600, 9800, 13400, 15800, 11000),
+gasto_vivienda = c(4200, 5200, 3800, 5100, 3100, 3900, 4500, 3300),
+gasto_alimentos = c(3600, 4100, 3400, 3950, 3000, 3550, 3700, 3200),
+personas_hogar = c(3, 4, 3, 4, 3, 3, 4, 3)
+)
+
+knitr::kable(
+hogares,
+caption = "Datos iniciales de hogares ficticios en México"
+)
+hogares <- hogares %>%
+mutate(
+impuesto_estatal = ingreso_mensual * 0.06,
+impuesto_municipal = ingreso_mensual * 0.02,
+gasto_total = gasto_vivienda + gasto_alimentos,
+ingreso_disponible = ingreso_mensual -
+impuesto_estatal -
+impuesto_municipal,
+presion_gasto = gasto_total / ingreso_mensual
+)
+
+knitr::kable(
+hogares,
+digits = 2,
+caption = "Hogares con impuestos, gasto total e ingreso disponible"
+)
+hogares <- hogares %>%
+mutate(
+nivel_bienestar = case_when(
+ingreso_disponible > 10000 ~ "alto",
+ingreso_disponible > 7000  ~ "medio",
+TRUE                       ~ "bajo"
+)
+)
+
+knitr::kable(
+hogares %>%
+select(estado, ingreso_disponible, nivel_bienestar),
+caption = "Clasificación de bienestar por hogar"
+)
+for (valor in hogares$presion_gasto) {
+if (valor > 0.6) {
+print("Hogar con alta presión de gasto")
+} else {
+print("Presión de gasto moderada")
+}
+}
+estimar_ahorro <- function(ingreso, gasto, impuestos) {
+ingreso - gasto - impuestos
+}
+
+hogares$ahorro_estimado <- mapply(
+estimar_ahorro,
+hogares$ingreso_mensual,
+hogares$gasto_total,
+hogares$impuesto_estatal + hogares$impuesto_municipal
+)
+
+knitr::kable(
+hogares %>%
+select(estado, ingreso_disponible, ahorro_estimado),
+digits = 2,
+caption = "Ingreso disponible y ahorro estimado por hogar"
+)
+write.csv(hogares, "hogares_impuestos.csv", row.names = FALSE)
+
+hogares_copia <- read.csv("hogares_impuestos.csv")
+
+knitr::kable(
+hogares_copia,
+caption = "Datos importados desde archivo CSV"
+)
+resumen <- hogares %>%
+summarise(
+ingreso_promedio = mean(ingreso_mensual),
+impuesto_promedio = mean(impuesto_estatal + impuesto_municipal),
+presion_promedio = mean(presion_gasto)
+)
+
+knitr::kable(
+resumen,
+digits = 2,
+caption = "Indicadores promedio de los hogares"
+)
+ggplot(hogares, aes(x = estado, y = ingreso_disponible)) +
+geom_col() +
+labs(
+title = "Ingreso disponible por estado",
+x = "Estado",
+y = "Ingreso disponible mensual"
+)
+ggplot(hogares, aes(x = ingreso_mensual, y = presion_gasto)) +
+geom_point(size = 3) +
+labs(
+title = "Relación ingreso y presión de gasto",
+x = "Ingreso mensual",
+y = "Presión de gasto"
+)
+scatterplot3d(
+hogares$ingreso_mensual,
+hogares$impuesto_estatal,
+hogares$gasto_total,
+main = "Panorama fiscal de hogares",
+xlab = "Ingreso mensual",
+ylab = "Impuesto estatal",
+zlab = "Gasto total"
+)
+hogares_sim <- hogares %>%
+mutate(
+impuesto_estatal = ingreso_mensual * 0.08,
+ingreso_disponible = ingreso_mensual -
+impuesto_estatal -
+impuesto_municipal
+)
+
+knitr::kable(
+hogares_sim %>%
+select(estado, ingreso_disponible, impuesto_estatal),
+digits = 2,
+caption = "Escenario con aumento del impuesto estatal"
+)
