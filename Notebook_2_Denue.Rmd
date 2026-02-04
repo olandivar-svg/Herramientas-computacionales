@@ -1,0 +1,130 @@
+---
+title: "Notebook 2 - Análisis DENUE"
+output: html_document
+---
+```{r}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+
+library(tidyverse)
+library(knitr)
+```{r}
+denue <- read.csv(
+  "data/DENUE_CDMX.csv",
+  stringsAsFactors = FALSE,
+  fileEncoding = "latin1"
+)
+
+knitr::kable(
+  head(denue),
+  caption = "Vista inicial del DENUE (CDMX)"
+)
+```{r}
+denue_sel <- denue %>%
+  select(
+    id,
+    nom_estab,
+    codigo_act,
+    nombre_act,
+    per_ocu,
+    municipio,
+    latitud,
+    longitud
+  )
+
+knitr::kable(
+  head(denue_sel),
+  caption = "Variables seleccionadas para el análisis"
+)
+```{r}
+denue_xochi <- denue_sel %>%
+  filter(municipio == "Xochimilco")
+
+nrow(denue_xochi)
+```{r}
+denue_xochi$per_ocu_num <- ifelse(denue_xochi$per_ocu == "0 a 5 personas", 3,
+                          ifelse(denue_xochi$per_ocu == "6 a 10 personas", 8,
+                          ifelse(denue_xochi$per_ocu == "11 a 30 personas", 20,
+                          ifelse(denue_xochi$per_ocu == "31 a 50 personas", 40,
+                          ifelse(denue_xochi$per_ocu == "51 a 100 personas", 75,
+                          ifelse(denue_xochi$per_ocu == "101 a 250 personas", 175,
+                          ifelse(denue_xochi$per_ocu == "251 y más personas", 300,
+                                 NA)))))))
+
+denue_limpio <- denue_xochi[!is.na(denue_xochi$per_ocu_num), ]
+
+knitr::kable(
+  head(denue_limpio),
+  caption = "Datos con personal ocupado normalizado"
+)
+```{r}
+ggplot(denue_limpio, aes(x = per_ocu_num)) +
+  geom_histogram(bins = 10) +
+  labs(
+    title = "Distribución del tamaño de empresas",
+    x = "Personal ocupado (escala)",
+    y = "Frecuencia"
+  )
+```{r}
+resumen <- denue_limpio %>%
+  summarise(
+    empresas = n(),
+    personal_promedio = mean(per_ocu_num),
+    personal_mediana = median(per_ocu_num),
+    personal_sd = sd(per_ocu_num)
+  )
+
+knitr::kable(
+  resumen,
+  digits = 2,
+  caption = "Resumen estadístico del personal ocupado"
+)
+```{r}
+actividades <- denue_limpio %>%
+  filter(nombre_act %in% c("Piscicultura en agua dulce", "Otra acuicultura"))
+
+t.test(
+  per_ocu_num ~ nombre_act,
+  data = actividades
+)
+```{r}
+ggplot(actividades, aes(x = nombre_act, y = per_ocu_num)) +
+  geom_boxplot() +
+  labs(
+    title = "Distribución del personal ocupado por actividad",
+    x = "Actividad económica",
+    y = "Personal ocupado"
+  )
+```{r}
+modelo_reg <- lm(per_ocu_num ~ latitud, data = denue_limpio)
+
+summary(modelo_reg)
+```{r}
+ggplot(denue_limpio, aes(x = latitud, y = per_ocu_num)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Relación entre latitud y tamaño de empresa",
+    x = "Latitud",
+    y = "Personal ocupado"
+  )
+```{r}
+anova_mod <- aov(per_ocu_num ~ nombre_act, data = denue_limpio)
+
+summary(anova_mod)
+```{r}
+ggplot(denue_limpio, aes(x = nombre_act, y = per_ocu_num)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Diferencias en tamaño de empresa por actividad económica",
+    x = "Actividad (SCIAN)",
+    y = "Personal ocupado"
+  )
+```{r}
+
+
+
