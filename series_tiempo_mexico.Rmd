@@ -1,0 +1,312 @@
+---
+title: "Series de Tiempo — Panel Macroeconómico México"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r instalar_paquetes}
+paquetes <- c("httr", "jsonlite", "quantmod", "tidyquant", "tidyverse",
+              "lubridate", "tseries", "forecast", "ggplot2", "xts",
+              "zoo", "PerformanceAnalytics", "corrplot", "urca", "vars")
+
+nuevos <- paquetes[!(paquetes %in% installed.packages()[,"Package"])]
+if(length(nuevos)) install.packages(nuevos)
+
+library(httr);     library(jsonlite);  library(quantmod)
+library(tidyquant); library(tidyverse); library(lubridate)
+library(tseries);  library(forecast);  library(ggplot2)
+library(xts);      library(zoo);       library(PerformanceAnalytics)
+library(corrplot);  library(urca);      library(vars)
+```
+
+```{r banxico_funciones}
+banxico_get_series <- function(ids, token, fecha_inicio, fecha_fin) {
+  ids_str <- paste(ids, collapse = ",")
+  url <- paste0(
+    "https://www.banxico.org.mx/SieAPIRest/service/v1/series/",
+    ids_str, "/datos/", fecha_inicio, "/", fecha_fin
+  )
+  resp <- GET(url, add_headers("Bmx-Token" = token))
+  if (status_code(resp) != 200) stop("Error API Banxico: ", status_code(resp))
+  contenido <- fromJSON(content(resp, "text", encoding = "UTF-8"))
+  return(contenido$bmx$series)
+}
+
+extraer_serie <- function(series_list, id_serie) {
+  serie <- series_list[series_list$idSerie == id_serie, ]
+  datos <- serie$datos[[1]]
+  
+  datos$dato <- gsub(",", "", datos$dato)
+  datos$dato <- trimws(datos$dato)
+  datos$dato[datos$dato == "N/E"] <- NA
+  datos$dato[datos$dato == ""]    <- NA
+  
+  df <- data.frame(
+    fecha = as.Date(datos$fecha, format = "%d/%m/%Y"),
+    valor = suppressWarnings(as.numeric(datos$dato))
+  )
+  df <- df[!is.na(df$valor), ]
+  return(df)
+}
+```
+
+```{r carga_banxico}
+token_banxico <- "b6c34a21baba92a643d35435ab59892feb38ec46a94e24e52e7948da583fa644"
+
+ids_banxico <- c(
+  "SF61745",   # Tasa objetivo
+  "SF60648",   # TIIE 28 días
+  "SF60633",   # Cetes 28 días
+  "SF43718",   # Tipo de cambio FIX MXN/USD
+  "SF43707",   # Reservas internacionales
+  "SP1",       # INPC mensual
+  "SF311408",  # M1
+  "SF311418",  # M2
+  "SP74625"    # Inflación subyacente
+)
+
+fecha_inicio <- "2005-01-01"
+fecha_fin    <- format(Sys.Date(), "%Y-%m-%d")
+
+series_raw <- banxico_get_series(ids_banxico, token_banxico, fecha_inicio, fecha_fin)
+
+tasa_obj <- extraer_serie(series_raw, "SF61745")
+tiie28   <- extraer_serie(series_raw, "SF60648")
+cetes28  <- extraer_serie(series_raw, "SF60633")
+tc_fix   <- extraer_serie(series_raw, "SF43718")
+reservas <- extraer_serie(series_raw, "SF43707")
+inpc     <- extraer_serie(series_raw, "SP1")
+m1       <- extraer_serie(series_raw, "SF311408")
+m2       <- extraer_serie(series_raw, "SF311418")
+inf_sub  <- extraer_serie(series_raw, "SP74625")
+
+cat("=== Filas por serie Banxico ===\n")
+for (nombre in c("tasa_obj","tiie28","cetes28","tc_fix",
+                 "reservas","inpc","m1","m2","inf_sub")) {
+  cat(sprintf("%-12s: %d filas\n", nombre, nrow(get(nombre))))
+}
+```
+
+```{r carga_yahoo_fred}
+tickers_yahoo <- c("^MXX", "MXN=X", "^GSPC", "GC=F", "CL=F")
+
+getSymbols(tickers_yahoo,
+           src  = "yahoo",
+           from = fecha_inicio,
+           to   = fecha_fin,
+           auto.assign = TRUE)
+
+ipc_bmv  <- Ad(`MXX`)
+mxn_usd  <- Ad(`MXN=X`)
+sp500    <- Ad(`GSPC`)
+oro      <- Ad(`GC=F`)
+petroleo <- Ad(`CL=F`)
+
+getSymbols(c("FEDFUNDS", "CPIAUCSL"),
+           src  = "FRED",
+           from = fecha_inicio,
+           to   = fecha_fin,
+           auto.assign = TRUE)
+```
+
+```{r limpieza_merge}
+df_to_xts <- function(df) {
+  df$fecha <- as.Date(df$fecha)
+  df       <- df[!is.na(df$valor), ]
+  if (nrow(df) == 0) return(xts())
+  xts(df$valor, order.by = df$fecha)
+}
+
+tasa_obj_xts <- df_to_xts(tasa_obj)
+tiie28_xts   <- df_to_xts(tiie28)
+cetes28_xts  <- df_to_xts(cetes28)
+tc_fix_xts   <- df_to_xts(tc_fix)
+reservas_xts <- df_to_xts(reservas)
+inpc_xts     <- df_to_xts(inpc)
+m1_xts       <- df_to_xts(m1)
+m2_xts       <- df_to_xts(m2)
+inf_sub_xts  <- df_to_xts(inf_sub)
+
+cat("=== Observaciones por xts ===\n")
+for (nombre in c("tasa_obj_xts","tiie28_xts","cetes28_xts","tc_fix_xts",
+                 "reservas_xts","inpc_xts","m1_xts","m2_xts","inf_sub_xts")) {
+  cat(sprintf("%-15s: %d obs\n", nombre, nrow(get(nombre))))
+}
+
+a_mensual <- function(s) {
+  if (nrow(s) == 0) stop(paste("Serie vacía:", deparse(substitute(s))))
+  to.monthly(s, indexAt = "firstof", OHLC = FALSE)
+}
+
+panel_mensual <- merge(
+  a_mensual(tasa_obj_xts), a_mensual(tiie28_xts),
+  a_mensual(cetes28_xts),  a_mensual(tc_fix_xts),
+  a_mensual(reservas_xts), a_mensual(inpc_xts),
+  a_mensual(m1_xts),       a_mensual(m2_xts),
+  a_mensual(inf_sub_xts),  a_mensual(ipc_bmv),
+  a_mensual(mxn_usd),      a_mensual(sp500),
+  a_mensual(oro),          a_mensual(petroleo),
+  FEDFUNDS, CPIAUCSL,
+  join = "inner"
+)
+
+colnames(panel_mensual) <- c(
+  "tasa_obj", "tiie28", "cetes28", "tc_fix",
+  "reservas", "inpc", "m1", "m2", "inf_sub",
+  "ipc_bmv", "mxn_usd", "sp500", "oro",
+  "petroleo", "fed_funds", "cpi_usa"
+)
+
+panel_df <- as.data.frame(panel_mensual) %>%
+  rownames_to_column("fecha") %>%
+  mutate(fecha = as.Date(fecha)) %>%
+  drop_na()
+
+cat(sprintf("\nPanel final: %d filas x %d columnas\n", nrow(panel_df), ncol(panel_df)))
+```
+
+```{r eda}
+## EDA
+panel_long <- panel_df %>%
+  pivot_longer(-fecha, names_to = "serie", values_to = "valor")
+
+ggplot(panel_long, aes(x = fecha, y = valor)) +
+  geom_line(color = "steelblue", linewidth = 0.5) +
+  facet_wrap(~serie, scales = "free_y", ncol = 3) +
+  labs(title = "Series de Tiempo — Panel Macroeconómico México",
+       x = NULL, y = NULL) +
+  theme_minimal(base_size = 10)
+
+summary(panel_df)
+
+cor_matrix <- cor(panel_df[,-1], use = "complete.obs")
+corrplot(cor_matrix, method = "color", type = "upper",
+         tl.cex = 0.7, addCoef.col = "black", number.cex = 0.5)
+```
+
+```{r estacionariedad}
+## Estacionariedad
+series_nombres <- colnames(panel_df)[-1]
+
+resultados_adf <- map_dfr(series_nombres, function(nombre) {
+  serie <- na.omit(panel_df[[nombre]])
+  test  <- adf.test(serie)
+  tibble(
+    serie        = nombre,
+    estadistico  = round(test$statistic, 4),
+    p_valor      = round(test$p.value, 4),
+    estacionaria = ifelse(test$p.value < 0.05, "Sí", "No")
+  )
+})
+
+print(resultados_adf)
+
+panel_diff <- panel_df %>%
+  mutate(across(-fecha, ~c(NA, diff(.)))) %>%
+  drop_na()
+```
+
+```{r descomposicion_stl}
+## Descomposición
+inpc_ts <- ts(panel_df$inpc,
+              start     = c(year(min(panel_df$fecha)),
+                            month(min(panel_df$fecha))),
+              frequency = 12)
+
+descomp_inpc <- stl(inpc_ts, s.window = "periodic")
+autoplot(descomp_inpc) +
+  labs(title = "Descomposición STL — INPC") +
+  theme_minimal()
+
+tc_ts <- ts(panel_df$tc_fix,
+            start     = c(year(min(panel_df$fecha)),
+                          month(min(panel_df$fecha))),
+            frequency = 12)
+
+descomp_tc <- stl(tc_ts, s.window = "periodic")
+autoplot(descomp_tc) +
+  labs(title = "Descomposición STL — Tipo de Cambio FIX") +
+  theme_minimal()
+```
+
+```{r arima}
+## ARIMA
+modelo_arima_inpc <- auto.arima(inpc_ts, seasonal = TRUE,
+                                stepwise = FALSE, approximation = FALSE)
+summary(modelo_arima_inpc)
+
+autoplot(forecast(modelo_arima_inpc, h = 12)) +
+  labs(title = "Pronóstico ARIMA — INPC (12 meses)",
+       x = "Fecha", y = "INPC") +
+  theme_minimal()
+
+modelo_arima_tc <- auto.arima(tc_ts, seasonal = TRUE,
+                               stepwise = FALSE, approximation = FALSE)
+summary(modelo_arima_tc)
+
+autoplot(forecast(modelo_arima_tc, h = 12)) +
+  labs(title = "Pronóstico ARIMA — Tipo de Cambio FIX (12 meses)",
+       x = "Fecha", y = "MXN/USD") +
+  theme_minimal()
+```
+
+```{r var}
+## VAR
+vars_modelo <- panel_diff %>%
+  dplyr::select(tasa_obj, inpc, tc_fix, reservas, fed_funds) %>%
+  drop_na()
+
+orden_var <- VARselect(vars_modelo, lag.max = 12, type = "const")
+p_optimo  <- orden_var$selection["AIC(n)"]
+
+modelo_var <- VAR(vars_modelo, p = p_optimo, type = "const")
+summary(modelo_var)
+
+irf_tc_tasa <- irf(modelo_var,
+                   impulse  = "tasa_obj",
+                   response = "tc_fix",
+                   n.ahead  = 12,
+                   boot     = TRUE)
+plot(irf_tc_tasa, main = "Respuesta del TC ante shock en Tasa Objetivo")
+
+fevd_resultado <- fevd(modelo_var, n.ahead = 12)
+plot(fevd_resultado)
+```
+
+```{r cointegracion}
+## Cointegración
+series_tasas <- panel_df %>%
+  dplyr::select(tasa_obj, tiie28, cetes28) %>%
+  drop_na() %>%
+  as.matrix()
+
+test_johansen <- ca.jo(series_tasas,
+                       type  = "trace",
+                       ecdet = "const",
+                       K     = 3)
+summary(test_johansen)
+
+modelo_vec <- cajorls(test_johansen, r = 1)
+summary(modelo_vec$rlm)
+```
+
+```{r actualizar_datos}
+actualizar_datos <- function(token, fecha_inicio = "2005-01-01") {
+  fecha_fin  <- format(Sys.Date(), "%Y-%m-%d")
+  series_raw <- banxico_get_series(ids_banxico, token, fecha_inicio, fecha_fin)
+  
+  getSymbols(c("^MXX","MXN=X","^GSPC","GC=F","CL=F"),
+             src = "yahoo", from = fecha_inicio, to = fecha_fin,
+             auto.assign = TRUE, warnings = FALSE)
+  
+  getSymbols(c("FEDFUNDS","CPIAUCSL"),
+             src = "FRED", from = fecha_inicio, to = fecha_fin,
+             auto.assign = TRUE)
+  
+  message("Datos actualizados al: ", Sys.Date())
+  return(series_raw)
+}
+```
